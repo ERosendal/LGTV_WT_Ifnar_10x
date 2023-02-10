@@ -1,0 +1,529 @@
+---
+title: "Cell Type Annotation"
+date: '`r format(Sys.Date(), "%B %d, %Y")`'
+output:
+  html_document:
+    self_contained: true
+    highlight: tango
+    df_print: paged
+    toc: yes
+    toc_float:
+      collapsed: false
+      smooth_scroll: true
+    toc_depth: 3
+    keep_md: yes
+    fig_caption: true
+  html_notebook:
+    self_contained: true
+    highlight: tango
+    df_print: paged
+    toc: yes
+    toc_float:
+      collapsed: false
+      smooth_scroll: true
+    toc_depth: 3
+editor_options: 
+  chunk_output_type: inline
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(message=FALSE, warning=FALSE, result='hold',fig.width=12,tidy=TRUE)
+knitr::opts_knit$set(progress=TRUE,verbose=TRUE)
+```
+<style>
+h1, .h1, h2, .h2, h3, .h3, h4, .h4 { margin-top: 50px }
+p.caption {font-size: 0.9em;font-style: italic;color: grey;margin-right: 10%;margin-left: 10%;text-align: justify}
+</style>
+
+***
+# Load data and libraries
+
+### Libraries
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, results='hold'}
+suppressMessages(require(Matrix))
+suppressPackageStartupMessages({
+  library(Seurat)
+  library(cowplot)
+  library(ggplot2)
+  library(magrittr)
+  library(dplyr)
+  library(rafalib)
+})
+```
+
+### Data
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+alldata <- readRDS("../DataInt/DataInt_230128_output/QC_230128_DataInt_230128.rds")
+# Setting RNA as default assay
+DefaultAssay(alldata) <- "RNA"
+```
+
+***
+# Clustering and Annotation
+
+### Visualize clusters
+
+```{r, fig.height=5, fig.width=12}
+plot_grid(ncol = 2,
+          DimPlot(alldata, reduction = "umap", group.by = "orig.ident")+NoAxes(),
+          DimPlot(alldata, reduction = "umap", group.by = "CCA_snn_res.1", label = T) +NoAxes()
+)
+
+# Checking QC metrics
+plot_grid(ncol = 2,
+          FeaturePlot(alldata, reduction = "umap", features = "nFeature_RNA") +NoAxes(),
+          FeaturePlot(alldata, reduction = "umap", features = "percent_mito") +NoAxes()
+)
+```
+
+### Marker genes per cluster
+
+```{r, fig.height=4.5, fig.width=8}
+# Identifying marker genes per cluster
+marker_genes <- FindAllMarkers(alldata, log2FC.threshold = 0.25, test.use = "wilcox", min.pct = 0.1, min.diff.pct = 0.2, only.pos = TRUE, max.cells.per.ident = 50)
+
+marker_genes %>%
+    group_by(cluster) %>%
+    top_n(-25, p_val_adj) -> top25
+
+marker_genes %>%
+    group_by(cluster) %>%
+    top_n(-8, p_val_adj) -> top8
+
+# Table of top 8 marker genes per cluster
+mypar(2, 6, mar = c(4, 6, 3, 1))
+for (i in unique(top8$cluster)) {
+    barplot(sort(setNames(top8$avg_log2FC, top8$gene)[top8$cluster == i], F),
+        horiz = T, las = 1, main = paste0(i, " vs. rest"), border = "white", yaxs = "i")
+    abline(v = c(0, 0.25), lty = c(1, 2))
+}
+
+top8
+```
+
+### Marker gene expression 
+
+```{r, fig.height=5, fig.width=12}
+# Manually annotated list of marker genes:
+
+# Glutameric neurons: Sclc17a7
+# GABA neurons: Gad1, Gad2
+# Microglia: Ctss + Csf1r + Cx3cr1
+# Astrocytes: Aqp4 + Rorb + Fgfr3
+# Oligo: Mag + Plp1 + Mog
+# OPC: Pdgfra + Cspg4 + Vcan
+# VLMC: Dcn + Col1a1
+# Pericytes: Abcc9 + Pdgfrb + Vtn
+# Endothelial: Cdln5 + Flt1 
+# ChP: Ttr + Aqp1
+# NK/Cd8: Nkg7 + Cd8a +GzmB
+
+
+my_markers = c("Slc17a7","Gad1", "Gad2",  "Ctss", "Csf1r", "Cx3cr1", "Aqp4", "Rorb", "Fgfr3", "Mag", "Mog", "Plp1", "Pdgfra","Cspg4", "Vcan", "Dcn", "Col1a1", "Abcc9", "Pdgfrb", "Vtn", "Cldn5", "Flt1", "Ttr", "Aqp1", "Nkg7", "Cd8a", "Gzmb", "LGTV")
+
+DotPlot(alldata, features = my_markers, group.by = "CCA_snn_res.1", assay = "RNA", c("lightgrey", "red4"))+ coord_flip()
+```
+
+```{r, fig.height=25, fig.width=10}
+# Vizualizing marker genes on UMAP
+plot_list <- list()
+for (i in my_markers) {
+    plot_list[[i]] <- FeaturePlot(alldata, reduction = "umap", features = i,
+        ncol = 1, order = T) + NoAxes() + NoGrid()
+}
+plot_grid(ncol = 3, plotlist = plot_list)
+```
+
+### QC metrics
+
+```{r, fig.height=3, fig.width=12}
+VlnPlot(alldata, group.by = "CCA_snn_res.1", features = "nFeature_RNA", pt.size = 0)
+VlnPlot(alldata, group.by = "CCA_snn_res.1", features = "percent_mito", pt.size = 0)
+VlnPlot(alldata, group.by = "CCA_snn_res.1", features = "percent_ribo", pt.size = 0)
+```
+
+### Annotation
+
+```{r}
+
+#checking active ident before annotation
+levels(alldata)
+
+alldata_annotated <- RenameIdents(alldata, 
+                                  '20' = 'Low_quality',
+                                  '29' = 'Doublet',
+                                  '2' = 'Neuron_ex',
+                                  '3' = 'Neuron_ex',
+                                  '4' = 'Neuron_ex',
+                                  '5' = 'Neuron_ex',
+                                  '6' = 'Neuron_ex',
+                                  '8' = 'Neuron_ex',
+                                  '12' = 'Neuron_ex',
+                                  '13' = 'Neuron_ex',
+                                  '15' = 'Neuron_ex',
+                                  '18' = 'Neuron_ex',
+                                  '20' = 'Neuron_ex',
+                                  '22' = 'Neuron_ex',
+                                  '24' = 'Neuron_ex',
+                                  '7' = 'Neuron_in',
+                                  '9' = 'Neuron_in',
+                                  '14' = 'Neuron_in',
+                                  '17' = 'Neuron_in',
+                                  '10' = 'Micro',
+                                  '11' = 'Micro',
+                                  '23' = 'Micro',
+                                  '1' = 'Astro',
+                                  '0' = 'Oligo',
+                                  '16' = 'OPC',
+                                  '19' = 'VLMCs',
+                                  '25' = 'VLMCs',
+                                  '26' = 'Peri',
+                                  '21' = 'Endo',
+                                  '28' = 'ChP',
+                                  '27' = 'T-cells')
+
+#checking active ident after annotation
+levels(alldata_annotated)
+
+#Extracting cell type prediction (medium resolution)
+celltype <- alldata_annotated@active.ident
+
+#Adding new metadata under the name "celltype" 
+alldata_annotated <- AddMetaData(alldata_annotated, celltype, col.name='celltype')
+```
+
+***
+# Subclustering to identify probable doublets
+
+### Astro
+
+```{r}
+# Subset astrocytes
+Astro <- subset(alldata_annotated, subset = celltype == "Astro")
+
+# Rerun preprocessing, dim. red. and clustering
+Astro <- FindVariableFeatures(Astro, nfeatures = 2000)
+Astro <- ScaleData(Astro)
+Astro <- RunPCA(Astro, npcs = 50)
+Astro <- RunUMAP(Astro,
+                   reduction = "pca", 
+                   dims = 1:20,
+                   n.components=2,
+                   n.neighbors=10,
+                   n.epochs=200,
+                   min.dist=0.3,
+                   learning.rate=1,
+                   spread=1)
+
+# Identify clusters
+Astro <- FindNeighbors(Astro, dims = 1:10, k.param = 10)
+Astro <- FindClusters(Astro, graph.name = "RNA_snn", resolution = 0.5, algorithm = 1)
+```
+
+```{r, fig.height=3, fig.width=10}
+# Check various features
+plot_grid(ncol = 4, 
+          DimPlot(Astro, reduction = "umap", group.by = "ident", label = TRUE) 
+          +ggtitle("Clusters")+theme(legend.position='bottom'),
+          DimPlot(Astro, reduction = "umap", group.by = "sex", label = FALSE) 
+          +ggtitle("Sex")+theme(legend.position='bottom'),
+          DimPlot(Astro, reduction = "umap", group.by = "treatment", label = FALSE) 
+          +ggtitle("Treatment")+theme(legend.position='bottom'),
+          DimPlot(Astro, reduction = "umap", group.by = "genotype", label = FALSE) 
+          +ggtitle("Genotype")+theme(legend.position='bottom')
+    )
+
+# Check QC 
+qc <- c("nFeature_RNA", "percent_mito", "percent_ribo", "percent_hb")
+
+plot_list <- list()
+for (i in qc) {
+    plot_list[[i]] <- FeaturePlot(Astro, reduction = "umap", features = i,
+        ncol = 1, order = T) + NoAxes() + NoGrid()
+}
+
+plot_grid(ncol = 4, plotlist = plot_list)
+
+```
+
+```{r, fig.height=4, fig.width=14}
+# Check QC features and gene expression neuronal marker genes
+plot_grid(ncol = 4,
+          VlnPlot(Astro, group.by = "RNA_snn_res.0.5", features = "nFeature_RNA"),
+          VlnPlot(Astro, group.by = "RNA_snn_res.0.5", features = "percent_mito"),
+          VlnPlot(Astro, group.by = "RNA_snn_res.0.5", features = "Gfap", assay = "RNA"), 
+          VlnPlot(Astro, group.by = "RNA_snn_res.0.5", features = "Slc17a7", assay = "RNA")
+)
+```
+
+```{r}
+# Annotate probable doublet cluster
+Astro.doublet <- Astro[,Astro@active.ident == 7]
+
+rm(Astro)
+gc()
+```
+
+### Micro
+
+```{r}
+# Subset microglia
+Micro <- subset(alldata_annotated, subset = celltype == "Micro")
+
+# Rerun preprocessing, dim. red. and clustering
+Micro <- FindVariableFeatures(Micro, nfeatures = 2000, assay = "RNA")
+Micro <- ScaleData(Micro, assay = "RNA")
+Micro <- RunPCA(Micro, npcs = 50, assay = "RNA")
+Micro <- RunUMAP(Micro,
+                   reduction = "pca", 
+                   dims = 1:20,
+                   n.components=2,
+                   n.neighbors=10,
+                   n.epochs=200,
+                   min.dist=0.3,
+                   learning.rate=1,
+                   spread=1)
+
+# Identify clusters
+Micro <- FindNeighbors(Micro, dims = 1:10, assay = "RNA", k.param =10)
+Micro <- FindClusters(Micro, graph.name = "RNA_snn", resolution = 0.5, algorithm = 1)
+```
+
+```{r, fig.height=3, fig.width=10}
+# Check various features
+plot_grid(ncol = 4, 
+          DimPlot(Micro, reduction = "umap", group.by = "ident", label = TRUE) 
+          +ggtitle("Clusters")+theme(legend.position='bottom'),
+          DimPlot(Micro, reduction = "umap", group.by = "sex", label = FALSE) 
+          +ggtitle("Sex")+theme(legend.position='bottom'),
+          DimPlot(Micro, reduction = "umap", group.by = "treatment", label = FALSE) 
+          +ggtitle("Treatment")+theme(legend.position='bottom'),
+          DimPlot(Micro, reduction = "umap", group.by = "genotype", label = FALSE) 
+          +ggtitle("Genotype")+theme(legend.position='bottom')
+    )
+
+# Check QC
+plot_list <- list()
+for (i in qc) {
+    plot_list[[i]] <- FeaturePlot(Micro, reduction = "umap", features = i,
+        ncol = 1, order = T) + NoAxes() + NoGrid()
+}
+
+plot_grid(ncol = 4, plotlist = plot_list)
+```
+
+```{r, fig.height=6, fig.width=14}
+# Check QC features and gene expression neuronal marker genes
+plot_grid(ncol = 3,
+          VlnPlot(Micro, group.by = "RNA_snn_res.0.5", features = "nFeature_RNA"),
+          VlnPlot(Micro, group.by = "RNA_snn_res.0.5", features = "percent_ribo"),
+          VlnPlot(Micro, group.by = "RNA_snn_res.0.5", features = "percent_mito"),
+          VlnPlot(Micro, group.by = "RNA_snn_res.0.5", features = "Ctss", assay = "RNA"),
+          VlnPlot(Micro, group.by = "RNA_snn_res.0.5", features = "Plp1", assay = "RNA"), 
+          VlnPlot(Micro, group.by = "RNA_snn_res.0.5", features = "Slc17a7", assay = "RNA")
+)
+```
+
+```{r}
+# Annotate probable doublets
+Micro.doublet <- Micro[,Micro@active.ident ==12]
+rm(Micro)
+gc()
+```
+
+***
+# Removing low quality cells and doublets
+
+```{r}
+# Select cells with low quality and suspected doublets
+cluster.remove <- subset(alldata_annotated, subset = celltype == "Low_quality" | celltype == "Doublet")
+
+# Check no of cells 
+dim(alldata_annotated)
+
+# Remove selected cells
+alldata.clean <- alldata_annotated[, setdiff(WhichCells(alldata_annotated), WhichCells(cluster.remove))]
+
+# Remove potential doublets found by subclustering of micro and astro
+alldata.clean <- alldata.clean[, setdiff(WhichCells(alldata.clean),
+                                     WhichCells(Astro.doublet))]
+alldata.clean <- alldata.clean[, setdiff(WhichCells(alldata.clean),
+                                     WhichCells(Micro.doublet))]
+# Check no of cells
+dim(alldata.clean)
+```
+
+```{r clean up}
+# Deleting old files to clear up memory
+rm(alldata, Micro.doublet, Astro.doublet, alldata_annotated, cluster.remove, marker_genes, plot_list, top25, top3, top8, celltype, qc, top3_list, top8_list)
+gc()
+```
+
+***
+
+# Make graphs/tables for manuscript
+
+### No of genes and nuclei 
+
+```{r}
+# Checking no. of nuclei and genes
+dim(alldata.clean)
+# Checking median no. of genes
+median(alldata.clean@meta.data$nFeature_RNA)
+
+wt <- subset(alldata.clean, subset = genotype == "wt")
+dim(wt)
+median(wt@meta.data$nFeature_RNA)
+
+ifnar <- subset(alldata.clean, subset = genotype == "ifnar")
+dim(ifnar)
+median(ifnar@meta.data$nFeature_RNA)
+
+none <- subset(alldata.clean, subset = treatment == "none")
+dim(none)
+median(none@meta.data$nFeature_RNA)
+
+mock <- subset(alldata.clean, subset = treatment == "mock")
+dim(mock)
+median(mock@meta.data$nFeature_RNA)
+
+lgtv <- subset(alldata.clean, subset = treatment == "lgtv")
+dim(lgtv)
+median(lgtv@meta.data$nFeature_RNA)
+
+# Clean up
+rm(wt, ifnar, none, mock, lgtv)
+gc()
+```
+
+### No. of cells per cell type
+
+```{r, echo=TRUE, fig.height=4, fig.width=10}
+# rename alldata to make it easier to write the code
+dat <- alldata.clean
+
+# Calculating absolut no. of cells in each data set 
+All <- table(dat$celltype)
+wt.no<- table(dat$celltype[dat$genotype == "wt" & dat$inf == "no"])
+wt.lgtv <- table(dat$celltype[dat$genotype == "wt" & dat$inf == "yes"])
+ifnar.no <- table(dat$celltype[dat$genotype == "ifnar" & dat$inf == "no"])
+ifnar.lgtv <- table(dat$celltype[dat$genotype == "ifnar" & dat$inf == "yes"])
+
+# Merging these tables
+all.cells <- rbind(All, wt.no, wt.lgtv, ifnar.no, ifnar.lgtv)
+knitr::kable(all.cells, caption = 'No of cells per celltype')
+
+# Calculating % per cell type per dataset
+All <- All *100 /sum(All)
+wt.no <- wt.no *100 / sum(wt.no)
+wt.lgtv <- wt.lgtv *100 / sum(wt.lgtv)
+ifnar.no <- ifnar.no *100 / sum(ifnar.no)
+ifnar.lgtv <- ifnar.lgtv *100 / sum(ifnar.lgtv)
+
+# Merging these tables 
+all.perc <- rbind(All, wt.no,  wt.lgtv, ifnar.no, ifnar.lgtv)
+knitr::kable(all.perc, caption = '% of cells per celltype', digits = 1)
+
+write.csv2(all.perc, file = "Percentage_celltypes_230128.csv")
+write.csv2(all.cells, file = "Total_no_celltypes_230128.csv")
+```
+
+```{r clean up2}
+# Deleting old files to clear up memory
+rm(dat, All, all.cells, all.perc, dat, marker_genes, top8_list, i, ifnar.lgtv, ifnar.mock, ifnar.none, wt.lgtv, wt.mock, wt.none)
+gc()
+```
+
+### Top 25 genes per annotated cell type
+
+```{r}
+# Find marker genes per cell type
+marker_genes <- FindAllMarkers(alldata.clean, log2FC.threshold = 0.25, test.use = "wilcox", min.pct = 0.1, min.diff.pct = 0.2, only.pos = TRUE, max.cells.per.ident = 50)
+
+marker_genes %>%
+    group_by(cluster) %>%
+    top_n(-25, p_val_adj) -> top25
+
+write.csv2(top25, file = "Top25_markergenes_per_celltype_230128.csv")
+```
+
+### DotPlot of selected marker genes
+
+```{r, fig.height=3.5, fig.width=9.5}
+# Save dotplot as a file to export values to excel/graphpad for visualization
+celltype_markers <- DotPlot(alldata.clean, features = my_markers, group.by = "celltype", assay = "RNA", c("lightgrey", "Red4")) 
+
+# Make DotPlot in R to validate 
+DotPlot(alldata.clean, features = my_markers, group.by = "celltype", assay = "RNA", c("lightgrey", "Red3"), scale = T) +theme(axis.text.x = element_text(angle = 45, hjust=1))
+
+write.csv2(celltype_markers$data, file="DotPlot_celltype_markers_230128.csv")
+```
+
+### DotPlot of lgtv in infected data sets
+
+```{r, fig.width=4, fig.height=3}
+ifnar_lgtv <- subset(alldata.clean, subset = genotype == "ifnar")
+ifnar_lgtv <- subset(ifnar_lgtv, subset = treatment == "lgtv")
+
+wt_lgtv <- subset(alldata.clean, subset = genotype == "wt")
+wt_lgtv <- subset(wt_lgtv, subset = treatment == "lgtv")
+
+# Save dotplot as a file to export values to excel/graphpad for visualization
+lgtv_reads_ifnar <- DotPlot(ifnar_lgtv, features = "LGTV", group.by = "celltype", assay = "RNA")
+lgtv_reads_wt <- DotPlot(wt_lgtv, features = "LGTV", group.by = "celltype", assay = "RNA")
+
+write.csv2(lgtv_reads_ifnar$data, file="DotPlot_lgtv_ifnar_230128.csv")
+write.csv2(lgtv_reads_wt$data, file="DotPlot_lgtv_wt_230128.csv")
+
+# Make dotplot in R to confirm
+DotPlot(ifnar_lgtv, features = "LGTV", group.by = "celltype", assay = "RNA", c("lightgrey", "Red4"), scale = T)
+DotPlot(wt_lgtv, features = "LGTV", group.by = "celltype", assay = "RNA", c("lightgrey", "Red4"), scale = T)
+
+```
+
+### Visualization of annotation on UMAP
+
+```{r, fig.height=3, fig.width=4}
+
+pdf("UMAP_cell_annotation_230128.pdf", onefile = TRUE, width=5, height=4)
+
+plot_grid(ncol = 1, 
+          DimPlot(alldata.clean, reduction = "umap", group.by = "celltype",
+                  label=FALSE, cols = c("red4", "red3", "royalblue4", "royalblue3", "steelblue1", "lightslateblue", "darkgreen", "forestgreen", "palegreen3", "lightgreen", "grey70")) +theme(legend.position='right')
+)
+dev.off()
+getwd()
+
+# Make UMAP in R to validate 
+plot_grid(ncol = 1, 
+          DimPlot(alldata.clean, reduction = "umap", group.by = "celltype",
+                  label=FALSE, cols = c("red4", "red3", "royalblue4", "royalblue3", "steelblue1", "lightslateblue", "darkgreen", "forestgreen", "palegreen3", "lightgreen", "grey70")) +theme(legend.position='right')
+)
+```
+
+```{r}
+# Deleting old files to clear up memory
+rm(ifnar_lgtv, wt_lgtv, top25, lgtv_reads_ifnar, lgtv_reads_wt, celltype_markers, marker_genes)
+gc()
+
+```
+
+***
+
+# Saving data
+
+```{r save}
+
+dir.create('./ClustAnnotation_230128_output', showWarnings = F)
+saveRDS(alldata.clean,"./ClustAnnotation_230128_output/QC_230128_DataInt_230128_Anno_230128.rds")
+
+```
+
+***
+# Session Info
+
+```{r}
+sessionInfo()
+```
