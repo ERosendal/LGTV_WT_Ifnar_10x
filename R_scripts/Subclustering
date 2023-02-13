@@ -1,0 +1,456 @@
+---
+title: "Sublustering of microglia/M and CD8+NK"
+date: '`r format(Sys.Date(), "%B %d, %Y")`'
+output:
+  html_document:
+    self_contained: true
+    highlight: tango
+    df_print: paged
+    toc: yes
+    toc_float:
+      collapsed: false
+      smooth_scroll: true
+    toc_depth: 3
+    keep_md: yes
+    fig_caption: true
+  html_notebook:
+    self_contained: true
+    highlight: tango
+    df_print: paged
+    toc: yes
+    toc_float:
+      collapsed: false
+      smooth_scroll: true
+    toc_depth: 3
+editor_options: 
+  chunk_output_type: inline
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(message=FALSE, warning=FALSE, result='hold',fig.width=12,tidy=TRUE)
+knitr::opts_knit$set(progress=TRUE,verbose=TRUE)
+```
+<style>
+h1, .h1, h2, .h2, h3, .h3, h4, .h4 { margin-top: 50px }
+p.caption {font-size: 0.9em;font-style: italic;color: grey;margin-right: 10%;margin-left: 10%;text-align: justify}
+</style>
+
+***
+# Load data and libraries
+
+### Libraries
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, results='hold'}
+suppressPackageStartupMessages({
+  library(Seurat)
+  library(cowplot)
+  library(ggplot2)
+  library(dplyr)
+})
+```
+
+### Data
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+
+alldata <- readRDS("../Anno/ClustAnnotation_230128_output/QC_230128_DataInt_230128_Anno_230128.rds")
+
+# Check DefaultAssay, should be "RNA"
+DefaultAssay(alldata)
+```
+***
+# Microglia/M
+
+### Subset, pre-processing and clustering
+
+```{r}
+# Subset cells based on cell type
+micro <- subset(alldata, subset = celltype == "Micro")
+
+```
+
+
+```{r, echo = FALSE}
+# General pre-processing
+micro <- FindVariableFeatures(micro, nfeatures = 2000, assay="RNA")
+micro <- ScaleData(micro, assay="RNA")
+micro <- RunPCA(micro, npcs = 20, verbose = FALSE, assay="RNA")
+micro <- RunUMAP(micro, 
+                   reduction = "pca", 
+                   dims = 1:10,
+                   n.components=2,
+                   n.neighbors=40,
+                   n.epochs=200,
+                   min.dist=0.3,
+                   learning.rate=1,
+                   spread=1)
+
+```
+
+
+```{r, include=FALSE}
+# Clustering
+micro <- FindNeighbors(micro, dims = 1:10, k.param = 40, prune.SNN = 1/15, assay="RNA")
+micro <- FindClusters(micro, graph.name = "RNA_snn", resolution = 0.5, algorithm = 1)
+
+```
+
+### Visualisation of data
+
+```{r, fig.height=4, fig.width=10}
+# Visualize clusters and other features
+plot_grid(ncol = 3, 
+          DimPlot(micro, reduction = "umap", group.by = "RNA_snn_res.0.5", label = TRUE) 
+          +ggtitle("Cluster")+theme(legend.position='bottom')+ NoAxes(),
+          DimPlot(micro, reduction = "umap", group.by = "treatment", label = FALSE) 
+          +ggtitle("Treatment")+theme(legend.position='bottom')+ NoAxes(),
+          DimPlot(micro, reduction = "umap", group.by = "genotype", label = FALSE) 
+          +ggtitle("Genotype")+theme(legend.position='bottom')+ NoAxes(),
+          DimPlot(micro, reduction = "umap", group.by = "sex", label = FALSE) 
+          +ggtitle("Sex")+theme(legend.position='bottom')+ NoAxes()
+    )
+
+# Define QC measures
+qc <- c("nFeature_RNA", "percent_mito", "percent_ribo", "percent_hb")
+
+# Visualize QC metrics 
+plot_list <- list()
+for (i in qc) {
+    plot_list[[i]] <- FeaturePlot(micro, reduction = "umap", features = i,
+        ncol = 1, order = T) + NoAxes() + NoGrid() 
+}
+
+plot_grid(ncol = 4, plotlist = plot_list)
+```
+
+
+```{r, fig.height=4}
+# Determine marker genes per cluster
+marker_genes <- FindAllMarkers(micro, log2FC.threshold = 0.25, test.use = "wilcox", 
+                               only.pos = TRUE, max.cells.per.ident = 40, assay = "RNA", verbose = FALSE)
+# marker_genes <- marker_genes[ which(marker_genes$p_val_adj < 0.05), ]
+
+
+marker_genes %>%
+    group_by(cluster) %>%
+    top_n(-3, p_val_adj) -> top3
+
+top3_list <- top3$gene
+
+# Heat map top unique marker genes
+DoHeatmap(micro, features = top3_list, group.by = "RNA_snn_res.0.5", assay="RNA")
+
+# Check top 3 markers per cluster
+top3
+
+# Write to excel
+write.csv2(top3, file = "Top10_subclustering_micro_M_230112.csv")
+
+# Clean up
+rm(marker_genes, top3, top5, top3_list)
+gc()
+```
+
+```{r, fig.height=8, fig.width=10}
+# Defining gene list for each cell type
+M_genes <- c("Msr1", "Ms4a8a", "Trem1", "Clec4e", "Sirpb1a", "Lilra6", "Slfn4", "Ifitm6", "Itga4")
+
+Micro_genes <- c("Cx3cr1", "P2ry12", "Ecscr", "Ptprm", "Kcnd1", "Sdk1", "Sgce", "Slc12a2", "Sema4g", "Pros1", "Slco2b1", "Smo", "Mrc2", "Mki67", "Tmem119")
+
+# Visualization on UMAP
+plot_list <- list()
+for (i in M_genes) {
+    plot_list[[i]] <- FeaturePlot(micro, features = i,
+        ncol = 1, order = T) + NoAxes() + NoGrid()
+}
+
+plot_grid(ncol = 4, plotlist = plot_list)
+
+plot_list <- list()
+for (i in Micro_genes) {
+    plot_list[[i]] <- FeaturePlot(micro, features = i,
+        ncol = 1, order = T) + NoAxes() + NoGrid()
+}
+plot_grid(ncol = 4, plotlist = plot_list)
+
+# Clean up
+rm(plot_list)
+gc()
+```
+### Annotations
+
+```{r}
+#checking active ident before annotation
+levels(micro)
+
+micro_annotated <- RenameIdents(micro, 
+                                  '1' = 'Microglia',
+                                  '3' = 'Microglia',
+                                  '0' = 'Macrophages',
+                                  '2' = 'Macrophages',
+                                  '4' = 'Macrophages',
+                                  '6' = 'Macrophages',
+                                  '5' = 'Monocyte-like',
+                                  '7' = 'Neutrophils')
+
+#checking active ident after annotation
+levels(micro_annotated)
+
+#Extracting cell type prediction
+cellsubtype <- micro_annotated@active.ident
+
+#Adding new metadata under the name "cellsubtype" 
+micro_annotated <- AddMetaData(micro_annotated, cellsubtype, col.name='cellsubtype')
+
+# Clean up
+rm(micro)
+gc()
+```
+
+***
+# Microglia - Output for figures 
+
+### PDFs UMAP
+
+```{r, fig.height=6, fig.width=6}
+
+# Annotated data all data sets
+pdf("UMAP_micro_M_230112_v2.pdf", onefile = TRUE, width=3, height=3)
+DimPlot(micro_annotated, reduction = "umap", group.by = "cellsubtype", label = F, pt.size = 0.2, cols = c("royalblue4", "steelblue3", "grey25", "grey40")) +xlim(-10,10) +ylim(-8,5) + NoAxes() +theme(legend.position='right')
+dev.off()
+
+# Subsetting data
+wt_annotated <- subset(micro_annotated, subset = genotype == "wt")
+wt_inf_annotated <- subset(wt_annotated, subset = inf == "yes")
+wt_no_inf_annotated <- subset(wt_annotated, subset = inf == "no")
+ifnar_annotated <- subset(micro_annotated, subset = genotype == "ifnar")
+ifnar_inf_annotated <- subset(ifnar_annotated, subset = inf == "yes")
+ifnar_no_inf_annotated <- subset(ifnar_annotated, subset = inf == "no")
+
+# Each condition separately
+pdf("UMAP_micro_M_wt_all_230112_v2.pdf", onefile = TRUE, width=3, height=3)
+DimPlot(wt_annotated, reduction = "umap", group.by = "cellsubtype", label = F, pt.size = 0.2, cols = c("royalblue4", "steelblue3", "grey25", "grey40")) +xlim(-10,10) +ylim(-8,5) + NoAxes() +theme(legend.position='none')
+dev.off()
+
+pdf("UMAP_micro_M_wt_inf_230112_v2.pdf", onefile = TRUE, width=3, height=3)
+DimPlot(wt_inf_annotated, reduction = "umap", group.by = "cellsubtype", label = F, pt.size = 0.2, cols = c("royalblue4", "steelblue3", "grey25", "grey40")) +xlim(-10,10) +ylim(-8,5) + NoAxes() +theme(legend.position='none')
+dev.off()
+
+pdf("UMAP_micro_M_wt_no_inf_230112_v2.pdf", onefile = TRUE, width=3, height=3)
+DimPlot(wt_no_inf_annotated, reduction = "umap", group.by = "cellsubtype", label = F, pt.size = 0.2, cols = c("royalblue4", "steelblue3", "grey25", "grey40")) +xlim(-10,10) +ylim(-8,5) + NoAxes() +theme(legend.position='none')
+dev.off()
+
+pdf("UMAP_micro_M_ifnar_all_230112_v2.pdf", onefile = TRUE, width=3, height=3)
+DimPlot(ifnar_annotated, reduction = "umap", group.by = "cellsubtype", label = F, pt.size = 0.2, cols = c("royalblue4", "steelblue3", "grey25", "grey40")) +xlim(-10,10) +ylim(-8,5) + NoAxes() +theme(legend.position='none')
+dev.off()
+
+pdf("UMAP_micro_M_ifnar_inf_230112_v2.pdf", onefile = TRUE, width=3, height=3)
+DimPlot(ifnar_inf_annotated, reduction = "umap", group.by = "cellsubtype", label = F, pt.size = 0.2, cols = c("royalblue4", "steelblue3", "grey25", "grey40")) +xlim(-10,10) +ylim(-8,5) + NoAxes() +theme(legend.position='none')
+dev.off()
+
+pdf("UMAP_micro_M_ifnar_no_inf_230112_v2.pdf", onefile = TRUE, width=3, height=3)
+DimPlot(ifnar_no_inf_annotated, reduction = "umap", group.by = "cellsubtype", label = F, pt.size = 0.2, cols = c("royalblue4", "steelblue3", "grey25", "grey40")) +xlim(-10,10) +ylim(-8,5) + NoAxes() +theme(legend.position='none')
+dev.off()
+
+# Defining gene sets for Micro/M and adding module score
+M_gene_list <- list(c("Slfn4", "Ms4a8a", "Clec4e", "Itga4"))
+micro_annotated <- AddModuleScore(object = micro_annotated, features = M_gene_list, name = "M_score")
+
+micro_gene_list <- list(c("Cx3cr1", "P2ry12", "Slco2b1", "Tmem119"))
+micro_annotated <- AddModuleScore(object = micro_annotated, features = micro_gene_list, name = "micro_score")
+
+# Vizualisation of micro and M score
+pdf("UMAP_M_score.pdf", onefile = TRUE, width=3, height=3)
+FeaturePlot(object = micro_annotated, features = "M_score1", cols = c("grey94",  "royalblue4"), pt.size = .2 )+ theme(legend.position = "top") +xlim(-10,10) +ylim(-8,5) + NoAxes() +theme(legend.position='top')
+dev.off()
+
+pdf("UMAP_micro_score.pdf", onefile = TRUE, width=3, height=3)
+FeaturePlot(object = micro_annotated, features = "micro_score1", cols = c("grey94",  "royalblue4"), pt.size = .2 )+ theme(legend.position = "top") +xlim(-10,10) +ylim(-8,5) + NoAxes() +theme(legend.position='top')
+dev.off()
+
+```
+
+```{r}
+# Deleting old files to clear up memory
+rm(wt_annotated, wt_inf_annotated, wt_no_inf_annotated, ifnar_annotated, ifnar_inf_annotated, ifnar_no_inf_annotated, micro_gene_list, M_gene_list, Micro_genes, M_genes)
+gc()
+```
+
+### Dotplot
+
+```{r, fig.height=2, fig.width=5}
+# Defining genes
+genes <- c("Tmem119", "Aif1")
+
+# Dotplot for export to excel
+dotplot_M <- DotPlot(micro_annotated, group.by = "cellsubtype", features = genes, cols = c("lightgrey", "Red4"), scale = T) +theme(axis.text.x = element_text(angle = 45, hjust=1))
+write.csv2(dotplot_M$data, file = "M_genes_230112.csv")
+
+# Clean up
+rm(genes, dotplot_M)
+gc()
+```
+
+### No. and % of cells
+
+```{r, echo=TRUE, fig.height=4, fig.width=10}
+# rename data to make it easier to write the code
+dat <- micro_annotated
+
+All <- table(dat$cellsubtype)
+wt.no<- table(dat$cellsubtype[dat$genotype == "wt" & dat$inf == "no"])
+wt.lgtv <- table(dat$cellsubtype[dat$genotype == "wt" & dat$inf == "yes"])
+ifnar.no <- table(dat$cellsubtype[dat$genotype == "ifnar" & dat$inf == "no"])
+ifnar.lgtv <- table(dat$cellsubtype[dat$genotype == "ifnar" & dat$inf == "yes"])
+
+
+# Merging these tables into a matrix (?) for printing
+all.cells <- rbind(All, wt.no, wt.lgtv, ifnar.no, ifnar.lgtv)
+knitr::kable(all.cells, caption = 'No of cells per celltype')
+
+wt_no <- subset(alldata, subset = genotype == "wt" & treatment != "lgtv")
+wt_lgtv <- subset(alldata, subset = genotype == "wt" & treatment == "lgtv")
+ifnar_no <- subset(alldata, subset = genotype == "ifnar" & treatment != "lgtv")
+ifnar_lgtv <- subset(alldata, subset = genotype == "ifnar" & treatment == "lgtv")
+
+# Calculating % per cellsubtype per dataset
+All <- All *100 /ncol(alldata)
+wt.no <- wt.no *100 / ncol(wt_no)
+wt.lgtv <- wt.lgtv *100 / ncol(wt_lgtv)
+ifnar.no <- ifnar.no *100 / ncol(ifnar_no)
+ifnar.lgtv <- ifnar.lgtv *100 / ncol(ifnar_lgtv)
+
+# Merging these tables into a matrix (?) for printing
+all.perc <- rbind(All, wt.no,  wt.lgtv, ifnar.no, ifnar.lgtv)
+knitr::kable(all.perc, caption = '% of cells per celltype', digits = 1)
+
+# Write to excel
+write.csv2(all.perc, file = "Percentage_cellsubtypes_230112.csv")
+write.csv2(all.cells, file = "Total_no_cellsubtypes_230112.csv")
+
+# Clean up
+rm(dat, All, wt.no, wt.lgtv, ifnar.no, ifnar.lgtv, wt_no, ifnar_no, ifnar_lgtv, all.perc, all.cells)
+gc()
+
+```
+
+### Save data
+
+```{r}
+dir.create('./SubClust_230128_output', showWarnings = F)
+saveRDS(micro_annotated,"./SubClust_230128_output/QC_230128_DataInt_230128_Anno_230128_SubClust_Micro_230128.rds")
+
+# Clean up
+rm(micro_annotated)
+gc()
+```
+
+***
+# CD8+NK cells
+
+### Subset, pre-processing and clustering
+
+```{r}
+# Setting treatment as active.ident
+alldata <- SetIdent(alldata, value = "treatment")
+
+# Subetting on celltype (CD8NK) and genotype (WT)
+Tcell <- subset(alldata, subset = celltype == "T-cells")
+Tcell <- subset(Tcell, subset = genotype == "wt")
+
+# Clean up
+rm(alldata)
+gc()
+```
+
+```{r}
+# General pre-processing
+Tcell <- FindVariableFeatures(Tcell, nfeatures = 1000)
+Tcell <- ScaleData(Tcell, verbose = FALSE)
+Tcell <- RunPCA(Tcell, npcs = 20, verbose = FALSE)
+Tcell <- RunUMAP(Tcell, 
+                   reduction = "pca", 
+                   dims = 1:10,
+                   n.components=2,
+                   n.neighbors=10,
+                   n.epochs=200,
+                   min.dist=0.3,
+                   learning.rate=1,
+                   spread=1)
+```
+
+```{r}
+# Clustering
+Tcell <- FindNeighbors(Tcell, dims = 1:10, k.param = 10, prune.SNN = 1/15)
+Tcell <- FindClusters(Tcell, graph.name = "RNA_snn", resolution = 0.2, algorithm = 1)
+```
+
+### Vizualisation of data
+
+```{r, fig.height=3, fig.width=4}
+# Clusters and sex
+plot_grid(ncol = 2,
+          DimPlot(Tcell, reduction = "umap", group.by = "RNA_snn_res.0.2", label = FALSE) 
+          +ggtitle("Clusters")+theme(legend.position='bottom'),
+          DimPlot(Tcell, reduction = "umap", group.by = "sex", label = FALSE) 
+          +ggtitle("Sex")+theme(legend.position='bottom')
+    )
+
+# QC metrics
+plot_list <- list()
+for (i in qc) {
+    plot_list[[i]] <- FeaturePlot(Tcell, reduction = "umap", features = i,
+        ncol = 1, order = T) + NoAxes() + NoGrid()
+}
+
+plot_grid(ncol = 2, plotlist = plot_list)
+```
+
+```{r}
+# Define marker genes per cluster
+marker_genes <- FindAllMarkers(Tcell, log2FC.threshold = 0.25, test.use = "wilcox", 
+                               only.pos = TRUE, max.cells.per.ident = 50, assay = "RNA")
+marker_genes <- marker_genes[ which(marker_genes$p_val_adj < 0.05), ]
+
+marker_genes %>%
+    group_by(cluster) %>%
+    top_n(-5, p_val_adj) -> top5
+
+top5_list <- top5$gene
+
+# Top 5 as heat map and list
+DoHeatmap(Tcell, features = top5_list, group.by = "RNA_snn_res.0.2")
+top5
+
+# Clean up
+rm(marker_genes, top5, top5_list)
+gc()
+```
+
+```{r}
+# Define genes per cell type and add as module score
+CD8_gene_list <- list(c("Cd3g", "Cd3d", "Cd8a", "Cd8b1", "Cd28"))
+NK_gene_list <- list(c("Klrd1", "Nkg7")) #"Klrblc","Nrc1", 
+Tcell <- AddModuleScore(object = Tcell, features = CD8_gene_list, name = "CD8_score")
+Tcell <- AddModuleScore(object = Tcell, features = NK_gene_list, name = "NK_score")
+
+# Write PDFs
+pdf("UMAP_TC_CD8_score.pdf", onefile = TRUE, width=1.6, height=2.1)
+FeaturePlot(object = Tcell, features = "CD8_score1", cols = c("grey94",  "royalblue4"), pt.size = .3 )+ theme(legend.position = "top") + NoAxes()
+dev.off()
+
+pdf("UMAP_TC_NK_score.pdf", onefile = TRUE, width=1.6, height=2.1)
+FeaturePlot(object = Tcell, features = "NK_score1", cols = c("grey94",  "royalblue4"), pt.size = .3 )+ theme(legend.position = "top") + NoAxes()
+dev.off
+
+# Clean up
+rm(CD8_gene_list, NK_gene_list, Tcell)
+gc()
+```
+
+***
+# Session Info
+
+```{r}
+sessionInfo()
+```
