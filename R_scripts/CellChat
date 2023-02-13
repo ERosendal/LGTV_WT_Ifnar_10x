@@ -1,0 +1,325 @@
+---
+title: "Cell-cell communication by CellChat"
+date: '`r format(Sys.Date(), "%B %d, %Y")`'
+output:
+  html_document:
+    self_contained: true
+    highlight: tango
+    df_print: paged
+    toc: yes
+    toc_float:
+      collapsed: false
+      smooth_scroll: true
+    toc_depth: 3
+    keep_md: yes
+    fig_caption: true
+  html_notebook:
+    self_contained: true
+    highlight: tango
+    df_print: paged
+    toc: yes
+    toc_float:
+      collapsed: false
+      smooth_scroll: true
+    toc_depth: 3
+editor_options: 
+  chunk_output_type: inline
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(message=FALSE, warning=FALSE, result='hold',fig.width=12,tidy=TRUE)
+knitr::opts_knit$set(progress=TRUE,verbose=TRUE)
+```
+<style>
+h1, .h1, h2, .h2, h3, .h3, h4, .h4 { margin-top: 50px }
+p.caption {font-size: 0.9em;font-style: italic;color: grey;margin-right: 10%;margin-left: 10%;text-align: justify}
+</style>
+
+***
+# Loading data and libraries
+
+### Libraries
+
+```{r, echo=TRUE, message=FALSE, warning=FALSE, results='hold'}
+suppressPackageStartupMessages({
+  library(Seurat)
+  library(dplyr)
+  library(CellChat)
+  library(patchwork)
+})
+```
+
+### Data
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+alldata <- readRDS("../Anno/ClustAnnotation_230128_output/QC_230128_DataInt_230128_Anno_230128.rds")
+micro_annotated <- readRDS("../SubClust/SubClust_230128_output/QC_230128_DataInt_230128_Anno_230128_SubClust_Micro_230128.rds")
+```
+
+# CellChat
+
+### Pre-processing
+
+```{r}
+# Separate cells annotated as Macrophages from micro/M in large data set (alldata)
+
+
+# Select cells with cell subtype M
+selected_M <- WhichCells(micro_annotated, idents = "Macrophages")
+
+# Rename these cells from "micro" to "M" under activeident
+levels(alldata@active.ident) <- c(levels(alldata@active.ident), "M")
+alldata@active.ident[names(alldata@active.ident) %in% selected_M] <- "M"
+
+# Checking that it worked
+table(alldata@active.ident)
+
+#Extracting cell type prediction
+celltype2 <- alldata@active.ident
+
+#Adding new metadata under the name "celltype2" 
+alldata <- AddMetaData(alldata, celltype2, col.name='celltype2')
+
+# Clean up
+rm(selected_M, celltype2)
+gc()
+```
+
+```{r}
+# Subset based on genotype and treatment and remove cell types with fewer than 10 cells in each data set
+
+
+wt_lgtv <- subset(alldata, subset = genotype == "wt" & inf == "yes")
+# Checking which cells are fewer than 10 -> None
+table(wt_lgtv@active.ident)
+
+ifnar_lgtv <- subset(alldata, subset = genotype == "ifnar" & inf == "yes")
+# Checking which cells are fewer than 10 -> M (3)
+table(ifnar_lgtv@active.ident)
+# Remove M
+ifnar_lgtv <- subset(ifnar_lgtv, subset = celltype2 != "M")
+table(ifnar_lgtv@active.ident)
+
+```
+
+### Extract CellChat input files
+
+```{r}
+# WT
+data.input_wtl <- GetAssayData(wt_lgtv, assay = "RNA", slot = "data") # normalized data matrix
+labels_wtl <- Idents(wt_lgtv)
+meta_wtl <- data.frame(group = labels_wtl, row.names = names(labels_wtl)) # create a dataframe of the cell labels
+
+# Ifnar
+data.input_ifl <- GetAssayData(ifnar_lgtv, assay = "RNA", slot = "data") # normalized data matrix
+labels_ifl <- Idents(ifnar_lgtv)
+meta_ifl <- data.frame(group = labels_ifl, row.names = names(labels_ifl)) # create a dataframe of the cell labels
+```
+
+### Create a CellChat object
+
+```{r}
+# WT
+cellchat_wtl <- createCellChat(object = data.input_wtl, meta = meta_wtl, group.by = "group")
+
+# Ifnar
+cellchat_ifl <- createCellChat(object = data.input_ifl, meta = meta_ifl, group.by = "group")
+
+# Clean up 
+rm(data.input_ifl, data.input_wtl, labels_ifl, labels_wtl, meta_ifl, meta_wtl)
+gc()
+```
+
+### Ligand-receptor interaction database
+ 
+```{r}
+# Select data base
+CellChatDB.use <- CellChatDB.mouse 
+
+# set the used database in the object
+cellchat_wtl@DB <- CellChatDB.use
+cellchat_ifl@DB <- CellChatDB.use
+```
+
+### Pre-proccessing
+
+```{r}
+# subset the expression data of signaling genes for saving computation cost
+
+# WT
+cellchat_wtl <- subsetData(cellchat_wtl) 
+future::plan("multiprocess", workers = 4) 
+cellchat_wtl <- identifyOverExpressedGenes(cellchat_wtl)
+cellchat_wtl <- identifyOverExpressedInteractions(cellchat_wtl)
+
+# Ifnar
+cellchat_ifl <- subsetData(cellchat_ifl) # This step is necessary even if using the whole database
+future::plan("multiprocess", workers = 4) # do parallel
+cellchat_ifl <- identifyOverExpressedGenes(cellchat_ifl)
+cellchat_ifl <- identifyOverExpressedInteractions(cellchat_ifl)
+
+```
+ 
+```{r, echo=FALSE, include=FALSE}
+# Compute the communication probability and infer cellular communication network and Infer the cell-cell communication at a signaling pathway level
+
+# WT
+cellchat_wtl <- computeCommunProb(cellchat_wtl, type = "truncatedMean")
+cellchat_wtl <- computeCommunProbPathway(cellchat_wtl)
+cellchat_wtl <- aggregateNet(cellchat_wtl)
+
+# Ifnar
+cellchat_ifl <- computeCommunProb(cellchat_ifl, type = "truncatedMean")
+cellchat_ifl <- computeCommunProbPathway(cellchat_ifl)
+cellchat_ifl <- aggregateNet(cellchat_ifl)
+
+# Lift up labels from WT that is not present in Ifnar
+
+# Define the cell labels to lift up
+group.new = levels(cellchat_wtl@idents)
+# Add them to Ifnar
+cellchat_ifl <- liftCellChat(cellchat_ifl, group.new)
+
+# Clean up 
+rm(group.new)
+```
+
+### Write PDFs
+
+```{r}
+
+pdf("Interactions_wt_lgtv_circle_230128.pdf", onefile = TRUE, width=6, height=4.5)
+groupSize <- as.numeric(table(cellchat_wtl@idents))
+# Number of interactions
+netVisual_circle(cellchat_wtl@net$count, 
+                 vertex.weight = groupSize, 
+                 color.use = c("red4", "red3", "royalblue4","royalblue3", "steelblue1", 
+                                     "lightslateblue", "darkgreen", "forestgreen", "palegreen3", 
+                                     "lightgreen", "grey70", "mediumblue"), 
+                 weight.scale = T, 
+                 label.edge= F, 
+                 title.name = "Number of interactions")
+
+# Interaction strength
+netVisual_circle(cellchat_wtl@net$weight, 
+                 vertex.weight = groupSize, 
+                 color.use = c("red4", "red3", "royalblue4", "royalblue3", "steelblue1", 
+                                     "lightslateblue", "darkgreen", "forestgreen", "palegreen3", 
+                                     "lightgreen", "grey70", "mediumblue"),
+                 weight.scale = T, 
+                 label.edge= F, 
+                 title.name = "Interaction weights/strength")
+
+# Interaction strength, not scaled
+netVisual_circle(cellchat_wtl@net$weight, 
+                 vertex.weight = groupSize, 
+                 color.use = c("red4", "red3", "royalblue4", "royalblue3", "steelblue1", 
+                                     "lightslateblue", "darkgreen", "forestgreen", "palegreen3", 
+                                     "lightgreen", "grey70", "mediumblue"),
+                 weight.scale = F, 
+                 label.edge= F, 
+                 title.name = "Interaction weights/strength")
+
+# Only interaction going into microglia, no of interactions
+netVisual_circle(cellchat_wtl@net$count, 
+                 targets.use = 3, 
+                 color.use = c("red4", "red3", "royalblue4", "royalblue3", "steelblue1", 
+                                     "lightslateblue", "darkgreen","forestgreen", "palegreen3", 
+                                     "lightgreen", "grey70", "mediumblue"),
+                 vertex.weight = groupSize, 
+                 weight.scale = T, 
+                 label.edge= T,
+                 edge.width.max = 5,
+                 title.name = "Number of interactions")
+
+# Only interaction going into microglia, interaction strength
+netVisual_circle(cellchat_wtl@net$weight, 
+                 targets.use = 3, 
+                 color.use = c("red4", "red3", "royalblue4", "royalblue3", "steelblue1", 
+                                     "lightslateblue", "darkgreen", "forestgreen", "palegreen3", 
+                                     "lightgreen", "grey70", "mediumblue"), 
+                 vertex.weight = groupSize, 
+                 weight.scale = T, 
+                 label.edge= T, 
+                 edge.width.max = 5,
+                 title.name = "Interaction weights/strength")
+dev.off()
+
+
+# Repeat for Ifnar
+pdf("Interactions_ifnar_lgtv_circle_230128.pdf", onefile = TRUE, width=6, height=4.5)
+groupSize <- as.numeric(table(cellchat_ifl@idents))
+netVisual_circle(cellchat_ifl@net$count, 
+                 vertex.weight = groupSize,
+                 color.use = c("red4", "red3", "royalblue4", "royalblue3", "steelblue1", 
+                                     "lightslateblue", "darkgreen", "forestgreen", "palegreen3", 
+                                     "lightgreen", "grey70"), 
+                 weight.scale = T, 
+                 label.edge= F, 
+                 title.name = "Number of interactions")
+
+netVisual_circle(cellchat_ifl@net$weight, 
+                 vertex.weight = groupSize,
+                 color.use = c("red4", "red3", "royalblue4", "royalblue3", "steelblue1", 
+                                     "lightslateblue", "darkgreen", "forestgreen", "palegreen3", 
+                                     "lightgreen", "grey70"),
+                 weight.scale = T, 
+                 label.edge= F, 
+                 title.name = "Interaction weights/strength")
+
+netVisual_circle(cellchat_ifl@net$weight, 
+                 vertex.weight = groupSize,
+                 color.use = c("red4", "red3", "royalblue4", "royalblue3", "steelblue1", 
+                                     "lightslateblue", "darkgreen", "forestgreen", "palegreen3", 
+                                     "lightgreen", "grey70"),
+                 weight.scale = F, 
+                 label.edge= F, 
+                 title.name = "Interaction weights/strength")
+
+netVisual_circle(cellchat_ifl@net$count, targets.use = 3, 
+                 color.use = c("red4", "red3", "royalblue4", "royalblue3", "steelblue1", 
+                                     "lightslateblue", "darkgreen", "forestgreen", "palegreen3", 
+                                     "lightgreen", "grey70"),
+                 vertex.weight = groupSize, 
+                 weight.scale = T, 
+                 label.edge= T,
+                 edge.width.max = 5,
+                 title.name = "Number of interactions")
+
+netVisual_circle(cellchat_ifl@net$weight, targets.use = 3, 
+                 color.use = c("red4", "red3", "royalblue4", "royalblue3", "steelblue1", 
+                                     "lightslateblue", "darkgreen", "forestgreen", "palegreen3", 
+                                     "lightgreen", "grey70"),
+                 vertex.weight = groupSize, 
+                 weight.scale = T, 
+                 label.edge= T, 
+                 edge.width.max = 5,
+                 title.name = "Interaction weights/strength")
+dev.off()
+
+# Subset interaction going inot microglia
+wt_lgtv_micro <- subsetCommunication(cellchat_wtl, targets.use = 3)
+ifnar_lgtv_micro <- subsetCommunication(cellchat_ifl, targets.use = 3)
+
+# Write to excel
+write.csv2(wt_lgtv_micro, "CellChat_wt_micro_lgtv_230128.csv", row.names = FALSE)
+write.csv2(ifnar_lgtv_micro, "CellChat_ifnar_micro_lgtv_230128.csv", row.names = FALSE)
+
+rm(wt_lgtv_micro, ifnar_lgtv_micro, groupSize, cellchat_ifl, cellchat_wtl, CellChatDB.use, ifnar_lgtv, wt_lgtv, micro_annotated)
+gc()
+```
+***
+# Save data
+
+```{r}
+dir.create('./CellChat_230128_output', showWarnings = F)
+saveRDS(alldata,"./CellChat_230128_output/QC_230128_DataInt_230128_Anno_230128_CellChat230128.rds")
+```
+
+***
+# Session Info
+
+```{r}
+sessionInfo()
+```
+
